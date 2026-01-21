@@ -48,14 +48,25 @@ export function validatePayload(body) {
     return { valid: false, error: "messages[] required" };
   }
 
+  // 🔁 Normalize in-place
+  body.messages = body.messages.map((m) => ({
+    messageId: m.messageId || m.id,
+    text: m.text || m.message,
+    timestamp: m.timestamp || Date.now(),
+  }));
+
   for (const msg of body.messages) {
     if (!msg.messageId || !msg.text) {
-      return { valid: false, error: "Each message requires messageId & text" };
+      return {
+        valid: false,
+        error: "Each message requires messageId & text",
+      };
     }
   }
 
   return { valid: true };
 }
+
 
 
 
