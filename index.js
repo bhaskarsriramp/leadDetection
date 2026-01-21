@@ -1,9 +1,9 @@
-// index.js for cloudruncomments service - PUBSUB PROCESSOR ONLY
+// index.js for conversation intelligence
 import express from "express";
 import mongoose from "mongoose";
 import axios from "axios";
 import qs from "qs";
-import { processLeadPipeline } from "./services/dmLeadDetection.js";
+import { processConversationPipeline } from "./services/dmConversationPipeline.js";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
@@ -73,33 +73,48 @@ export function validatePayload(body) {
 app.get("/", (_, res) => res.status(200).send("ok"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
 
-app.post("/analyze-leads", async (req, res) => {
 
-  console.log('entered analyse-leads run');
+
+app.post("/analyze-conversation-context", async (req, res) => {
   const start = Date.now();
 
   try {
+    await connectMongo();
 
-    const { messages } = req.body;
+    if (!Array.isArray(req.body)) {
+      return res.status(400).json({
+        error: "Payload must be an array of conversations",
+      });
+    }
 
-    console.log("🚀 Lead detection request");
+    const results = [];
 
-    // 2️⃣ Run pipeline
-    const result = await processLeadPipeline(messages);
+    // Sequential to control HF / Gemini load
+    for (const item of req.body) {
+      if (!item.conversationId || !Array.isArray(item.messages)) {
+        continue;
+      }
 
-    // 3️⃣ Respond
-    return res.status(200).json({
-      result,
+      const r = await processConversationPipeline(item);
+      results.push({
+        conversationId: item.conversationId,
+        ...r,
+      });
+    }
+
+    return res.json({
+      conversationsProcessed: results.length,
+      results,
       executionMs: Date.now() - start,
     });
   } catch (err) {
-    console.error("❌ Lead detection failed:", err.message);
-    return res.status(500).json({
-      error: "LEAD_PIPELINE_FAILED",
-      message: err.message,
-    });
+    console.error("❌ Pipeline failed:", err);
+    return res.status(500).json({ error: "PIPELINE_FAILED" });
   }
 });
+
+
+
 
 app.listen(PORT, () => {
   console.log(`🚀 Lead Detection service running on port ${PORT}`);
