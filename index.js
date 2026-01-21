@@ -3,8 +3,7 @@ import express from "express";
 import mongoose from "mongoose";
 import axios from "axios";
 import qs from "qs";
-import { processLeadPipeline } from "./services/dmLeadDetection";
-
+import { processLeadPipeline } from "./services/dmLeadDetection.js";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
