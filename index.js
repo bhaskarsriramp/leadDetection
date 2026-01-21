@@ -79,11 +79,6 @@ app.post("/analyze-leads", async (req, res) => {
   const start = Date.now();
 
   try {
-    // 1️⃣ Validate payload
-    const { valid, error } = validatePayload(req.body);
-    if (!valid) {
-      return res.status(400).json({ error });
-    }
 
     const { messages } = req.body;
 
