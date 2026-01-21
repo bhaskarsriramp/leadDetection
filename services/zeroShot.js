@@ -186,18 +186,17 @@ export async function zeroShotBatchFilter(messages) {
         };
       });
 
-     const filteredResults = results.filter(
-  (r) => typeof r.meaningfulScore === "number" && r.meaningfulScore >= 0.5
-);
+const passed = results.filter((r) => r.PASS_CONV);
 
 console.log(
-  `[HF] Classification complete: ${filteredResults.length}/${results.length} messages retained (meaningfulScore >= 0.5, ${(
-    (filteredResults.length / results.length) *
+  `[HF] Classification complete: ${passed.length}/${results.length} messages passed to Gemini (${(
+    (passed.length / results.length) *
     100
   ).toFixed(1)}%)`
 );
 
-return filteredResults;
+return passed;
+
 
 
     } catch (err) {
