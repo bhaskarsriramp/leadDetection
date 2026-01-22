@@ -85,7 +85,7 @@ export async function processConversationPipeline({
         update: {
           $set: {
             intent: "general",
-            intentConfidence: r.confidence ?? 0.6,
+            intentConfidence: 0,
             intentSource: "hf",
             intentAnalyzedAt: new Date(),
           },
