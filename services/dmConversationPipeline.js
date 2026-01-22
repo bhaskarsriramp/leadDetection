@@ -190,32 +190,42 @@ export async function processConversationPipeline({
   // ----------------------------------------
   // STEP 5: ONLY-UPGRADE LOGIC
   // ----------------------------------------
-  let upgraded = false;
-  const current = convo.conversationIntent || "General";
-  const { personal, lead, collaboration } = convo.intentSignals;
+  // ----------------------------------------
+// STEP 5: CONVERSATION INTENT DECISION
+// ----------------------------------------
+let upgraded = false;
+const current = convo.conversationIntent || "General";
+const { personal, lead, collaboration } = convo.intentSignals;
 
-  if (
-    current !== "Lead" &&
-    lead >= LEAD_UPGRADE_SCORE &&
-    lead > personal * UPGRADE_RATIO
-  ) {
-    convo.conversationIntent = "Lead";
-    convo.conversationIntentConfidence = Math.min(
-      1,
-      lead / (lead + personal + 1)
-    );
-    upgraded = true;
-  } else if (
-    current === "General" &&
-    collaboration >= BUSINESS_UPGRADE_SCORE
-  ) {
-    convo.conversationIntent = "Business";
-    convo.conversationIntentConfidence = Math.min(
-      1,
-      collaboration / (personal + collaboration + 1)
-    );
-    upgraded = true;
-  }
+// 🚀 Strong lead shortcut (DM-optimized)
+if (current !== "Lead" && delta.lead >= 0.8) {
+  convo.conversationIntent = "Lead";
+  convo.conversationIntentConfidence = Math.min(1, delta.lead);
+  convo.conversationIntentUpdatedAt = now;
+  upgraded = true;
+}
+// Fallback aggregate logic
+else if (
+  current !== "Lead" &&
+  lead >= LEAD_UPGRADE_SCORE &&
+  lead > personal * UPGRADE_RATIO
+) {
+  convo.conversationIntent = "Lead";
+  convo.conversationIntentConfidence = Math.min(1, lead);
+  convo.conversationIntentUpdatedAt = now;
+  upgraded = true;
+}
+// Collaboration
+else if (
+  current === "General" &&
+  collaboration >= BUSINESS_UPGRADE_SCORE
+) {
+  convo.conversationIntent = "Business";
+  convo.conversationIntentConfidence = Math.min(1, collaboration);
+  convo.conversationIntentUpdatedAt = now;
+  upgraded = true;
+}
+
 
   if (upgraded) {
     convo.conversationIntentUpdatedAt = now;
