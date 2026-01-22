@@ -31,6 +31,16 @@ const MAX_RETRIES = 5;
  */
 const CONFIDENCE_THRESHOLD = 0.75;
 
+// Labels that should NEVER reach Gemini if confident
+const HARD_BLOCK_LABELS = [
+  "greeting_or_salutation",
+  "emoji",
+  "reaction",
+  "gibberish",
+];
+
+
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -52,10 +62,10 @@ function normalizeResult(item) {
   }
 
   // Case 2: { labels: [], scores: [] }
-  if (item && Array.isArray(item.labels) && Array.isArray(item.scores)) {
+  if (item?.labels && item?.scores) {
     const allScores = {};
-    item.labels.forEach((label, idx) => {
-      allScores[label] = item.scores[idx];
+    item.labels.forEach((l, i) => {
+      allScores[l] = item.scores[i];
     });
 
     return {
@@ -72,27 +82,31 @@ function normalizeResult(item) {
  * Determine if message should pass to LLM for analysis
  */
 function shouldPassToLLM(normalized) {
-  if (!normalized) return true; // When in doubt, pass to LLM
+  if (!normalized) return true;
 
   const { label, score, allScores } = normalized;
 
-  // If top prediction is meaningful_inquiry, pass to LLM
+  // Hard block greetings / noise
+  if (HARD_BLOCK_LABELS.includes(label) && score >= 0.8) {
+    return false;
+  }
+
+  // Meaningful inquiry always passes
   if (label === "meaningful_inquiry") {
     return true;
   }
 
-  // If confidence is low, pass to LLM (better safe than sorry)
+  // Low confidence → let Gemini decide
   if (score < CONFIDENCE_THRESHOLD) {
     return true;
   }
 
-  // Check if meaningful_inquiry has reasonable score even if not top
+  // Secondary signal
   const meaningfulScore = allScores?.["meaningful_inquiry"] || 0;
   if (meaningfulScore > 0.6) {
     return true;
   }
 
-  // Otherwise, filter out (don't pass to LLM)
   return false;
 }
 
@@ -106,22 +120,20 @@ export async function zeroShotBatchFilter(messages) {
     return [];
   }
 
+  // Fail-open safety
   if (!HF_API_KEY) {
-    console.error("[HF] API key not found, passing all messages to LLM");
-    return messages.map((c) => ({
-      messageId: c.id,
-      message: c.message,
+    console.error("[HF] Missing API key — passing all to Gemini");
+    return messages.map((m) => ({
+      messageId: m.id,
+      message: m.message,
       PASS_CONV: true,
       reason: "MISSING_API_KEY",
     }));
   }
 
-  // Prepare inputs - clean and validate
-  const inputs = messages.map((c) => {
-    const text = typeof c.message === "string" ? c.message.trim() : "";
-    // Return empty string for truly empty messages, model will handle it
-    return text || "";
-  });
+  const inputs = messages.map((m) =>
+    typeof m.message === "string" ? m.message.trim() : ""
+  );
 
   let delay = INITIAL_DELAY_MS;
   let retries = 0;
@@ -132,12 +144,8 @@ export async function zeroShotBatchFilter(messages) {
         HF_API_URL,
         {
           inputs,
-          parameters: {
-            candidate_labels: LABELS,
-          },
-          options: {
-            wait_for_model: true,
-          },
+          parameters: { candidate_labels: LABELS },
+          options: { wait_for_model: true },
         },
         {
           headers: {
@@ -151,21 +159,17 @@ export async function zeroShotBatchFilter(messages) {
       const data = response.data;
 
       if (!Array.isArray(data) || data.length !== messages.length) {
-        throw new Error(
-          `INVALID_BATCH_RESPONSE: expected ${messages.length} results, got ${data?.length || 0}`
-        );
+        throw new Error("HF_BATCH_SIZE_MISMATCH");
       }
 
-      // Process results
-      const results = data.map((item, index) => {
-        const messageId = messages[index].id;
-        const message = messages[index].message;
+      const results = data.map((item, idx) => {
         const normalized = normalizeResult(item);
+        const msg = messages[idx];
 
         if (!normalized) {
           return {
-            messageId,
-            message,
+            messageId: msg.id,
+            message: msg.message,
             PASS_CONV: true,
             reason: "EMPTY_MODEL_OUTPUT",
           };
@@ -175,76 +179,58 @@ export async function zeroShotBatchFilter(messages) {
         const PASS_CONV = shouldPassToLLM(normalized);
 
         return {
-          messageId,
-          message,
+          messageId: msg.id,
+          message: msg.message,
           label,
           confidence: Number(score.toFixed(3)),
-          meaningfulScore: allScores?.["meaningful_inquiry"]
-            ? Number(allScores["meaningful_inquiry"].toFixed(3))
+          meaningfulScore: allScores?.meaningful_inquiry
+            ? Number(allScores.meaningful_inquiry.toFixed(3))
             : undefined,
           PASS_CONV,
+          filterReason: PASS_CONV ? "PASSED" : "HF_FILTERED",
         };
       });
 
-const passed = results.filter((r) => r.PASS_CONV);
+      const passed = results.filter((r) => r.PASS_CONV).length;
+      console.log(
+        `[HF] Filtered ${results.length - passed}/${results.length}, passed ${passed}`
+      );
 
-console.log(
-  `[HF] Classification complete: ${passed.length}/${results.length} messages passed to Gemini (${(
-    (passed.length / results.length) *
-    100
-  ).toFixed(1)}%)`
-);
-
-return passed;
-
-
-
+      // 🔥 IMPORTANT: return ALL results
+      return results;
     } catch (err) {
       retries++;
       const status = err?.response?.status;
 
       console.error(
-        `[HF RETRY ${retries}/${MAX_RETRIES}] delay=${delay}ms, status=${status}`,
+        `[HF RETRY ${retries}/${MAX_RETRIES}] status=${status}`,
         err?.response?.data || err.message
       );
 
-      // Stop on non-recoverable errors
       if ([400, 401, 403, 422].includes(status)) {
-        console.error(
-          "[HF] Non-recoverable error, passing all messages to LLM"
-        );
-        return messages.map((c) => ({
-          messageId: c.id,
-          message: c.message,
+        console.error("[HF] Non-recoverable error — fail open");
+        return messages.map((m) => ({
+          messageId: m.id,
+          message: m.message,
           PASS_CONV: true,
           reason: "NON_RECOVERABLE_HF_ERROR",
         }));
       }
 
-      // If max retries exceeded, pass all to LLM
       if (retries >= MAX_RETRIES) {
-        console.error("[HF] Max retries exceeded, passing all messages to LLM");
-        return messages.map((c) => ({
-          messageId: c.id,
-          message: c.message,
+        console.error("[HF] Max retries exceeded — fail open");
+        return messages.map((m) => ({
+          messageId: m.id,
+          message: m.message,
           PASS_CONV: true,
           reason: "MAX_RETRIES_EXCEEDED",
         }));
       }
 
-      // Wait and retry with exponential backoff
       await sleep(delay);
       delay = Math.min(delay * 2, MAX_DELAY_MS);
     }
   }
-
-  // Fallback (should never reach here, but just in case)
-  return messages.map((c) => ({
-    messageId: c.id,
-    message: c.message,
-    PASS_CONV: true,
-    reason: "UNEXPECTED_FALLBACK",
-  }));
 }
 
 /**

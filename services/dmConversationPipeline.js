@@ -1,4 +1,3 @@
-// services/dmConversationPipeline.js
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import { zeroShotBatchFilter } from "./zeroShot.js";
@@ -46,7 +45,7 @@ export async function processConversationPipeline({
   const eligibleMessages = messages.filter(
     (m) =>
       m.sender === "them" &&
-      !m.intent &&
+      m.intent == null &&
       typeof m.text === "string" &&
       m.createdAtPlatform &&
       isUnanswered(m, messages)
@@ -70,12 +69,41 @@ export async function processConversationPipeline({
   }));
 
   const hfResults = await zeroShotBatchFilter(hfInput);
+
+  const hfFiltered = hfResults.filter((r) => !r.PASS_CONV);
   const toGemini = hfResults.filter((r) => r.PASS_CONV);
+
+  // ----------------------------------------
+  // STEP 1.1: BATCH UPDATE HF-FILTERED MESSAGES
+  // ----------------------------------------
+  let messageUpdates = 0;
+
+  if (hfFiltered.length > 0) {
+    const hfBulkOps = hfFiltered.map((r) => ({
+      updateOne: {
+        filter: { _id: r.messageId, intent: null },
+        update: {
+          $set: {
+            intent: "general",
+            intentConfidence: r.confidence ?? 0.6,
+            intentSource: "hf",
+            intentAnalyzedAt: new Date(),
+          },
+        },
+      },
+    }));
+
+    const hfBulkRes = await Message.bulkWrite(hfBulkOps, {
+      ordered: false,
+    });
+
+    messageUpdates += hfBulkRes.modifiedCount || 0;
+  }
 
   if (toGemini.length === 0) {
     return {
       analyzedMessages: 0,
-      messageUpdates: 0,
+      messageUpdates,
       conversationUpdated: false,
       reason: "HF_FILTERED_ALL",
     };
@@ -87,28 +115,38 @@ export async function processConversationPipeline({
   const geminiResults = await analyzeMessageIntent(toGemini);
 
   // ----------------------------------------
-  // STEP 3: UPDATE MESSAGES
+  // STEP 3: BATCH UPDATE GEMINI RESULTS
   // ----------------------------------------
-  let updatedMessages = 0;
   const delta = { personal: 0, lead: 0, collaboration: 0 };
 
-  for (const r of geminiResults) {
-    const res = await Message.updateOne(
-      { _id: r.messageId, intent: null },
-      {
-        $set: {
-          intent: r.intent,
-          intentConfidence: r.confidence,
-          intentSource: "hf+gemini",
-          intentAnalyzedAt: new Date(),
-        },
-      }
-    );
+  const geminiBulkOps = [];
 
-    if (res.modifiedCount === 1 && delta[r.intent] !== undefined) {
-      updatedMessages++;
+  for (const r of geminiResults) {
+    geminiBulkOps.push({
+      updateOne: {
+        filter: { _id: r.messageId, intent: null },
+        update: {
+          $set: {
+            intent: r.intent,
+            intentConfidence: r.confidence,
+            intentSource: "hf+gemini",
+            intentAnalyzedAt: new Date(),
+          },
+        },
+      },
+    });
+
+    if (delta[r.intent] !== undefined) {
       delta[r.intent] += r.confidence;
     }
+  }
+
+  if (geminiBulkOps.length > 0) {
+    const geminiBulkRes = await Message.bulkWrite(geminiBulkOps, {
+      ordered: false,
+    });
+
+    messageUpdates += geminiBulkRes.modifiedCount || 0;
   }
 
   // ----------------------------------------
@@ -187,7 +225,7 @@ export async function processConversationPipeline({
 
   return {
     analyzedMessages: toGemini.length,
-    messageUpdates: updatedMessages,
+    messageUpdates,
     conversationUpdated: upgraded,
     newConversationIntent: convo.conversationIntent,
     intentSignals: convo.intentSignals,
