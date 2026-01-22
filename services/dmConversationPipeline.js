@@ -283,11 +283,9 @@ if (upgraded) {
     creatorId: convo.creatorId, // make sure this exists on convo
     conversationId: convo._id,
     update: {
-      conversationIntent: convo.conversationIntent,
-      conversationIntentConfidence: convo.conversationIntentConfidence,
-      conversationLeadSeriousness: convo.conversationLeadSeriousness,
-      intentSignals: convo.intentSignals,
-      updatedAt: convo.conversationIntentUpdatedAt,
+      label: convo.conversationIntent,
+      labelIntentConfidence: convo.conversationIntentConfidence,
+      labelLeadSeriousness: convo.conversationLeadSeriousness,
     },
   });
 }
