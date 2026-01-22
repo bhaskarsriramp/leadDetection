@@ -2,6 +2,7 @@ import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import { zeroShotBatchFilter } from "./zeroShot.js";
 import { analyzeMessageIntent } from "./geminiMessageIntentAnalyser.js";
+import { publishConversationUpdate } from "./realtimePublisher.js";
 
 // ---------------- CONFIG ----------------
 const LEAD_UPGRADE_SCORE = 3.0;
@@ -273,6 +274,24 @@ export async function processConversationPipeline({
   }
 
   await convo.save();
+
+  // ----------------------------------------
+// STEP 6: REALTIME UI UPDATE (INTENT CHANGE)
+// ----------------------------------------
+if (upgraded) {
+  await publishConversationUpdate({
+    creatorId: convo.creatorId, // make sure this exists on convo
+    conversationId: convo._id,
+    update: {
+      conversationIntent: convo.conversationIntent,
+      conversationIntentConfidence: convo.conversationIntentConfidence,
+      conversationLeadSeriousness: convo.conversationLeadSeriousness,
+      intentSignals: convo.intentSignals,
+      updatedAt: convo.conversationIntentUpdatedAt,
+    },
+  });
+}
+
 
   return {
     analyzedMessages: toGemini.length,
