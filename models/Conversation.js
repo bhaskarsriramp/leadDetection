@@ -68,6 +68,15 @@ conversationIntentUpdatedAt: {
   default: null,
 },
 
+conversationLeadSeriousness: {
+  type: Number,
+  min: 0,
+  max: 1,
+  default: 0,
+},
+conversationLeadSeriousnessUpdatedAt: Date,
+
+
     // State
     isBlocked: { type: Boolean, default: false },
 

@@ -28,10 +28,19 @@ Rules:
 - Be conservative
 - Prefer "general" if unsure
 
+Additionally, estimate how SERIOUS or COMMITTED the user appears.
+
+Seriousness guidelines:
+- Very short or option-like messages → low seriousness
+- Browsing or exploration → low to medium
+- Clear goals, numbers, timelines, questions → high
+- Contact sharing or explicit readiness → very high
+
 Respond ONLY as JSON:
 {
   "intent": "personal|lead|collaboration|general",
-  "confidence": 0.0
+  "confidence": 0.0,
+  "seriousness": 0.0
 }
 `;
 
@@ -60,6 +69,7 @@ Message:
       messageId: msg.messageId,
       intent: parsed.intent,
       confidence: Number(parsed.confidence.toFixed(3)),
+      seriousness: Number(parsed.seriousness.toFixed(3)),
     });
   }
 

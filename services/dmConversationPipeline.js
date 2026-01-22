@@ -8,7 +8,7 @@ const LEAD_UPGRADE_SCORE = 3.0;
 const BUSINESS_UPGRADE_SCORE = 1.8;
 const UPGRADE_RATIO = 1.5;
 
-// Decay config
+// Decay config (intent only)
 const HALF_LIFE_DAYS = 14;
 const MIN_SIGNAL_FLOOR = 0.15;
 
@@ -21,6 +21,33 @@ function applyDecay(signalValue, daysElapsed) {
   const decayFactor = Math.exp(-daysElapsed / HALF_LIFE_DAYS);
   const decayed = signalValue * decayFactor;
   return Math.max(decayed, MIN_SIGNAL_FLOOR);
+}
+
+/**
+ * Deterministic effort multiplier (0–1)
+ */
+function computeEffortMultiplier(text) {
+  if (!text || typeof text !== "string") return 0.1;
+
+  let score = 0;
+  const length = text.length;
+
+  // A. Message length
+  if (length > 120) score += 0.4;
+  else if (length > 40) score += 0.2;
+
+  // B. Numbers (goals, timelines)
+  if (/\d/.test(text)) score += 0.2;
+
+  // C. Question / request
+  if (/[?]/.test(text)) score += 0.1;
+
+  // D. Contact sharing
+  if (/\b\d{8,}\b/.test(text) || /\S+@\S+\.\S+/.test(text)) {
+    score += 0.4;
+  }
+
+  return Math.min(1, score);
 }
 
 /**
@@ -74,7 +101,7 @@ export async function processConversationPipeline({
   const toGemini = hfResults.filter((r) => r.PASS_CONV);
 
   // ----------------------------------------
-  // STEP 1.1: BATCH UPDATE HF-FILTERED MESSAGES
+  // STEP 1.1: HF-FILTERED → GENERAL (0 SIGNAL)
   // ----------------------------------------
   let messageUpdates = 0;
 
@@ -110,18 +137,35 @@ export async function processConversationPipeline({
   }
 
   // ----------------------------------------
-  // STEP 2: GEMINI INTENT
+  // STEP 2: GEMINI INTENT + SERIOUSNESS
   // ----------------------------------------
   const geminiResults = await analyzeMessageIntent(toGemini);
 
   // ----------------------------------------
-  // STEP 3: BATCH UPDATE GEMINI RESULTS
+  // STEP 3: UPDATE MESSAGES + TRACK SERIOUSNESS
   // ----------------------------------------
   const delta = { personal: 0, lead: 0, collaboration: 0 };
-
   const geminiBulkOps = [];
 
+  let maxNewLeadSeriousness = 0;
+
   for (const r of geminiResults) {
+    const msgText = toGemini.find(
+      (m) => String(m.messageId) === String(r.messageId)
+    )?.message;
+
+    const effort = computeEffortMultiplier(msgText);
+
+    const leadSeriousness =
+      r.intent === "lead"
+        ? Number((r.seriousness * effort).toFixed(3))
+        : 0;
+
+    maxNewLeadSeriousness = Math.max(
+      maxNewLeadSeriousness,
+      leadSeriousness
+    );
+
     geminiBulkOps.push({
       updateOne: {
         filter: { _id: r.messageId, intent: null },
@@ -129,6 +173,7 @@ export async function processConversationPipeline({
           $set: {
             intent: r.intent,
             intentConfidence: r.confidence,
+            leadSeriousness,
             intentSource: "hf+gemini",
             intentAnalyzedAt: new Date(),
           },
@@ -156,9 +201,10 @@ export async function processConversationPipeline({
   if (!convo) throw new Error("Conversation not found");
 
   convo.intentSignals ||= { personal: 0, lead: 0, collaboration: 0 };
+  convo.conversationLeadSeriousness ||= 0;
 
   // ----------------------------------------
-  // STEP 4.1: APPLY DECAY
+  // STEP 4.1: APPLY INTENT DECAY
   // ----------------------------------------
   const now = new Date();
   const lastUpdated =
@@ -180,7 +226,7 @@ export async function processConversationPipeline({
   );
 
   // ----------------------------------------
-  // STEP 4.2: ADD NEW SIGNALS
+  // STEP 4.2: ADD NEW INTENT SIGNALS
   // ----------------------------------------
   convo.intentSignals.personal += delta.personal;
   convo.intentSignals.lead += delta.lead;
@@ -188,47 +234,42 @@ export async function processConversationPipeline({
   convo.intentSignalsUpdatedAt = now;
 
   // ----------------------------------------
-  // STEP 5: ONLY-UPGRADE LOGIC
+  // STEP 4.3: UPDATE CONVERSATION SERIOUSNESS (MAX)
   // ----------------------------------------
+  if (maxNewLeadSeriousness > convo.conversationLeadSeriousness) {
+    convo.conversationLeadSeriousness = maxNewLeadSeriousness;
+    convo.conversationLeadSeriousnessUpdatedAt = now;
+  }
+
   // ----------------------------------------
-// STEP 5: CONVERSATION INTENT DECISION
-// ----------------------------------------
-let upgraded = false;
-const current = convo.conversationIntent || "General";
-const { personal, lead, collaboration } = convo.intentSignals;
+  // STEP 5: CONVERSATION INTENT DECISION
+  // ----------------------------------------
+  let upgraded = false;
+  const current = convo.conversationIntent || "General";
+  const { personal, lead, collaboration } = convo.intentSignals;
 
-// 🚀 Strong lead shortcut (DM-optimized)
-if (current !== "Lead" && delta.lead >= 0.8) {
-  convo.conversationIntent = "Lead";
-  convo.conversationIntentConfidence = Math.min(1, delta.lead);
-  convo.conversationIntentUpdatedAt = now;
-  upgraded = true;
-}
-// Fallback aggregate logic
-else if (
-  current !== "Lead" &&
-  lead >= LEAD_UPGRADE_SCORE &&
-  lead > personal * UPGRADE_RATIO
-) {
-  convo.conversationIntent = "Lead";
-  convo.conversationIntentConfidence = Math.min(1, lead);
-  convo.conversationIntentUpdatedAt = now;
-  upgraded = true;
-}
-// Collaboration
-else if (
-  current === "General" &&
-  collaboration >= BUSINESS_UPGRADE_SCORE
-) {
-  convo.conversationIntent = "Business";
-  convo.conversationIntentConfidence = Math.min(1, collaboration);
-  convo.conversationIntentUpdatedAt = now;
-  upgraded = true;
-}
-
-
-  if (upgraded) {
+  if (current !== "Lead" && delta.lead >= 0.8) {
+    convo.conversationIntent = "Lead";
+    convo.conversationIntentConfidence = Math.min(1, delta.lead);
     convo.conversationIntentUpdatedAt = now;
+    upgraded = true;
+  } else if (
+    current !== "Lead" &&
+    lead >= LEAD_UPGRADE_SCORE &&
+    lead > personal * UPGRADE_RATIO
+  ) {
+    convo.conversationIntent = "Lead";
+    convo.conversationIntentConfidence = Math.min(1, lead);
+    convo.conversationIntentUpdatedAt = now;
+    upgraded = true;
+  } else if (
+    current === "General" &&
+    collaboration >= BUSINESS_UPGRADE_SCORE
+  ) {
+    convo.conversationIntent = "Business";
+    convo.conversationIntentConfidence = Math.min(1, collaboration);
+    convo.conversationIntentUpdatedAt = now;
+    upgraded = true;
   }
 
   await convo.save();
@@ -239,6 +280,7 @@ else if (
     conversationUpdated: upgraded,
     newConversationIntent: convo.conversationIntent,
     intentSignals: convo.intentSignals,
+    conversationLeadSeriousness: convo.conversationLeadSeriousness,
     decayAppliedDays: elapsedDays.toFixed(2),
   };
 }
