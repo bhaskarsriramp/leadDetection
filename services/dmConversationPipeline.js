@@ -67,6 +67,8 @@ export async function processConversationPipeline({
   conversationId,
   messages,
 }) {
+  const now = new Date();
+
   // ----------------------------------------
   // STEP 0: ELIGIBLE MESSAGES
   // ----------------------------------------
@@ -115,7 +117,9 @@ export async function processConversationPipeline({
             intent: "general",
             intentConfidence: 0,
             intentSource: "hf",
-            intentAnalyzedAt: new Date(),
+            intentAnalyzedAt: now,
+            aiProcess: "completed",
+            processedAt: now,
           },
         },
       },
@@ -138,9 +142,14 @@ export async function processConversationPipeline({
   }
 
   // ----------------------------------------
-  // STEP 2: GEMINI INTENT + SERIOUSNESS
+  // STEP 2: GEMINI INTENT + SERIOUSNESS (BATCHED)
   // ----------------------------------------
-  const geminiResults = await analyzeMessageIntent(toGemini);
+  const geminiInput = toGemini.map((m) => ({
+    messageId: m.messageId,
+    message: m.message,
+  }));
+
+  const geminiResults = await analyzeMessageIntent(geminiInput);
 
   // ----------------------------------------
   // STEP 3: UPDATE MESSAGES + TRACK SERIOUSNESS
@@ -175,14 +184,16 @@ export async function processConversationPipeline({
             intent: r.intent,
             intentConfidence: r.confidence,
             leadSeriousness,
-            intentSource: "hf+gemini",
-            intentAnalyzedAt: new Date(),
+            intentSource: r.error ? "hf+gemini-fallback" : "hf+gemini",
+            intentAnalyzedAt: now,
+            aiProcess: "completed",
+            processedAt: now,
           },
         },
       },
     });
 
-    if (delta[r.intent] !== undefined) {
+    if (!r.error && delta[r.intent] !== undefined) {
       delta[r.intent] += r.confidence;
     }
   }
@@ -207,7 +218,6 @@ export async function processConversationPipeline({
   // ----------------------------------------
   // STEP 4.1: APPLY INTENT DECAY
   // ----------------------------------------
-  const now = new Date();
   const lastUpdated =
     convo.intentSignalsUpdatedAt || convo.createdAt || now;
 
@@ -276,20 +286,19 @@ export async function processConversationPipeline({
   await convo.save();
 
   // ----------------------------------------
-// STEP 6: REALTIME UI UPDATE (INTENT CHANGE)
-// ----------------------------------------
-if (upgraded) {
-  await publishConversationUpdate({
-    creatorId: convo.creatorId, // make sure this exists on convo
-    conversationId: convo._id,
-    update: {
-      label: convo.conversationIntent,
-      labelIntentConfidence: convo.conversationIntentConfidence,
-      labelLeadSeriousness: convo.conversationLeadSeriousness,
-    },
-  });
-}
-
+  // STEP 6: REALTIME UI UPDATE (INTENT CHANGE)
+  // ----------------------------------------
+  if (upgraded) {
+    await publishConversationUpdate({
+      creatorId: convo.creatorId,
+      conversationId: convo._id,
+      update: {
+        label: convo.conversationIntent,
+        labelIntentConfidence: convo.conversationIntentConfidence,
+        labelLeadSeriousness: convo.conversationLeadSeriousness,
+      },
+    });
+  }
 
   return {
     analyzedMessages: toGemini.length,

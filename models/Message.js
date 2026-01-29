@@ -95,6 +95,10 @@ leadSeriousness: {
   default: 0,
 },
 
+aiProcess: { type: String, enum: ['idle', 'processing', 'completed'], default: 'idle' },
+  processingStartedAt: Date,
+  processedAt: Date
+
   },
   { timestamps: true }
 );
