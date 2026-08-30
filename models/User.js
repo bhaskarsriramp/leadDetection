@@ -12,7 +12,26 @@ const User_Schema = new Schema({
   rightBottomImage: { type: String },
   is_google_user: { type: Boolean },
   handleUserName: { type: String },
-  
+
+  find_leads: { type: Boolean, default: false },
+  first_conv_pull: { type: Boolean, default: false },
+  conv_pull: {
+      type: String,
+      enum: ["processed", "processing", "idle"],
+      default: "idle"
+    },
+  handle_created: { type: Boolean, default: false },
+  leads_plan_limit: { type: Number, default : 5 },
+  leads_found: { type: Number, default : 0 },
+  dms_plan_limit: { type: Number, default : 1000 },
+  subscription_plan: {
+      type: String,
+      enum: ["free", "creator", "pro"],
+      default: "free"
+    },
+  planBannerShowed: { type: Boolean, default: false},
+  lead_agent: {type : Boolean, default: true},
+
   instagramConnected: { type: Boolean, default: false },
   igUserId: { type: String },
   igId: { type: String },
@@ -26,12 +45,25 @@ const User_Schema = new Schema({
   fbLongLivedToken: { type: String },
   fbLongLivedTokenExpiry: { type: Date },
   fbLastRefreshAt: { type: Date },
+  igLongLivedToken: { type: String },
+  igLongLivedTokenExpiry: { type: Date },
   igBiography: {type : String},
   fbPageAccessToken: {type : String},
   has_profile_pic_ig: { type: Boolean, default: false },
   fbNeedsReconnect: { type: Boolean },
-
   automationFeedSubscribed : {type : Boolean, default : false },
+
+  duplicateExists: { type: Boolean, default: false },
+  duplicateInfo: {
+    igUsername: { type: String },
+    maskedEmail: { type: String },
+  },
+
+  igConversationsSync: {
+  afterCursor: { type: String },
+  hasMore: { type: Boolean, default: true },
+  lastSyncedAt: { type: Date }
+},
 
 
   demo_logged_in: { type: Boolean },
@@ -57,11 +89,29 @@ const User_Schema = new Schema({
   is_del: { type: Boolean, default: false },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date },
+
+  // AI-generated writing style fingerprint — used for contextual quick reply generation
+  creatorStyleProfile: {
+    tone: { type: String },                   // e.g. "casual-energetic", "hype", "calm-supportive"
+    emojiUsage: { type: String },             // "frequent" | "occasional" | "none"
+    avgLength: { type: String },              // "short" | "medium" | "long"
+    catchphrases: [{ type: String }],         // up to 5 phrases the creator commonly uses
+    writingGuidelines: { type: String },      // 1-paragraph style description for Gemini to mimic
+    lastAnalyzedAt: { type: Date },
+    sentMessageCountAtAnalysis: { type: Number },
+  },
 });
 
 User_Schema.index({ email: 1, handleUserName: 1 }, { unique: true });
 
+// Login lookup by email
+User_Schema.index({ email: 1 });
 
+// Page resolution by handle
+User_Schema.index({ handleUserName: 1 });
+
+// Duplicate detection by Instagram user ID
+User_Schema.index({ igUserId: 1 });
 
 // Register model as "User" but use existing collection "users"
 const User = mongoose.models.User || mongoose.model("User", User_Schema, "users");
