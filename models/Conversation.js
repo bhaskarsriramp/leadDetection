@@ -28,12 +28,12 @@ const ConversationSchema = new Schema(
     // Labeling
     label: {
       type: String,
-      enum: ["Personal", "Lead", "General"],
+      enum: ["Personal", "Lead", "General", "Business"],
       default: "General",
     },
     labelSource: {
       type: String,
-      enum: ["auto", "manual"],
+      enum: ["auto", "manual", "ai"],
       default: "auto",
     },
 
@@ -76,6 +76,22 @@ conversationLeadSeriousness: {
 },
 conversationLeadSeriousnessUpdatedAt: Date,
 
+followUpStatus: {
+  needed: { type: Boolean, default: false },
+  priority: { type: String, enum: ["high", "medium", "low", null], default: null },
+  reason: { type: String, default: null },
+  suggestedAction: { type: String, default: null },
+  detectedAt: { type: Date, default: null },
+  dismissedAt: { type: Date, default: null },    // When creator dismisses
+  completedAt: { type: Date, default: null },    // When creator follows up
+},
+followUpAnalyzedAt: { type: Date, default: null },
+conversationLeadQuality: {
+  type: String,
+  enum: ["none", "low", "medium", "high", "hot"],
+  default: "none",
+},
+
 
     // State
     isBlocked: { type: Boolean, default: false },
@@ -94,6 +110,23 @@ notes: {
   text: { type: String, default: "" },
   updatedAt: { type: Date }
 },
+
+creatorHasReplied: { type: Boolean, default: false },
+
+leadUserContext: { type: String, default: null },
+
+    // Quick reply suggestions (AI-generated, cached per conversation)
+    quickReplies: {
+      suggestions: [
+        {
+          text: { type: String },
+          intent: { type: String }, // ask-details | warm-opener | soft-close | reassure | follow-up
+          _id: false,
+        },
+      ],
+      generatedAt: { type: Date, default: null },
+      lastMessageId: { type: String, default: null }, // igMessageId of last message when generated — invalidation key
+    },
 
     // Sorting
     lastActivityAt: { type: Date, required: true },
